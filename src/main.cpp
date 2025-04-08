@@ -9,49 +9,55 @@
 
 int main(int argc, char **argv) {
         MPI_Init(&argc, &argv);
+        MPI_Errhandler_set(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
 
         int mpi_rank, mpi_sz;
         MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &mpi_sz);
 
-        config_t config; // TODO: setup constructor
+        config_t config { }; 
+        if (argc != 10) {
+                fprintf(stderr, "Usage: 9 args are required.\n");
+                return 0;
+        }
+
+        config.input_file = argv[1];
+        config.px = atoi(argv[2]);
+        config.py = atoi(argv[3]);
+        config.pz = atoi(argv[4]);
+        config.nx = atoi(argv[5]);
+        config.ny = atoi(argv[6]);
+        config.nz = atoi(argv[7]);
+        config.nstep = atoi(argv[8]);
+        config.output_file = argv[9];
+
         assert(mpi_sz == config.px * config.py * config.pz);
+        assert(config.nx % config.px == 0);
+        assert(config.ny % config.py == 0);
+        assert(config.nz % config.pz == 0);
 
         // all sub-domains have equal sizes. bound stores the size
         Point bound { config.nx / config.px, config.ny / config.py,
                config.nz / config.pz }; 
 
-        // max msg sizes are bounded by MAX_MSG_SIZE
-        // this also bounds our sub-domain size
-        const int max_z = (MAX_MSG_SIZE) / (bound[0] * bound[1]);
-        bound[2] = std::min(bound[2], max_z);
-
         auto is_corner {
                 [&bound, &config](int x, int y, int z) -> bool {
-                        x %= bound[0];
-                        y %= bound[1];
                         int ret = x == (bound[0] - 1);
                         ret &= y == (bound[1] - 1);
-
-                        if (z == config.nz - 1) return ret;
-
-                        z %= bound[2];
-                        ret &= (z == bound[2] - 1);
+                        ret &= z == (bound[2] - 1);
                         return ret;
                 }
         };
 
-        const int num_chunks_z = (config.nz + bound[2] - 1) / bound[2];
-        vector rank_assign(vector<vector<vector>>(num_chunks_z, 
-                                vector<vector> 
-        vector rank_assgn[config.px][config.py][num_chunks_z];
+        Block<float> data(bound, config.nstep); // this rank's sub-domain
+
+        std::vector rank_assgn(config.px, std::vector(config.py, std::vector<int>(config.pz)));
         {
-                int rnk = 1;
-                for (int z = 0; z < num_chunks_z; z++) for (int y = 0; y < config.py; y++)
+                int rnk = 0;
+                for (int z = 0; z < config.pz; z++) for (int y = 0; y < config.py; y++)
                        for (int x = 0; x < config.px; x++) {
                               rank_assgn[x][y][z] = rnk;
-                              rnk++;
-                              if (rnk == mpi_sz) rnk = 1;
+                              rnk = (rnk + 1) % mpi_sz;
                        }
         }
 
@@ -61,40 +67,237 @@ int main(int argc, char **argv) {
                 FILE *fptr = fopen(config.input_file, "r");
                 assert(fptr != NULL);
 
-                Block<float> data_to_send[mpi_sz];
-                int tags[mpi_sz]; memset(tags, 0, sizeof tags);
+                std::vector<Block<float>> data_to_send(mpi_sz, Block<float>(bound, config.nstep));
 
                 MPI_Request requests[mpi_sz];
                 for (int i = 0; i < mpi_sz; i++) requests[i] = MPI_REQUEST_NULL;
                 
                 // TODO: can probably be optimized a lot
-                int rnk = 1;
-                for (int z = 0; z < config.nz; z++) for (y = 0; y < config.ny; y++)
-                        for (x = 0; x < config.nx; x++) {
+                for (int z = 0; z < config.nz; z++) for (int y = 0; y < config.ny; y++)
+                        for (int x = 0; x < config.nx; x++) {
                                 int _x = x % bound[0];
                                 int _y = y % bound[1];
                                 int _z = z % bound[2];
-                                for (t = 0; t < config.nstep; t++) {
+
+                                int rnk = rank_assgn[x / bound[0]][y / bound[1]][z / bound[2]];
+                                for (int t = 0; t < config.nstep; t++) {
                                         float val; fscanf(fptr, "%f", &val);
-                                        data_to_send[rnk](t, _x, _y, _z) = val;
+                                        if (rnk)
+                                                data_to_send[rnk](t, _x, _y, _z) = val;
+                                        else
+                                                data(t, _x, _y, _z) = val;
                                 }
 
-                                if (is_corner(x, y, z)) {
-                                        MPI_Wait(&requests[rnk], MPI_STATUS_IGNORE);
-                                        MPI_Isend(data_to_send[rnk].data,
-                                                        data_to_send[rnk].block_sz,
-                                                        MPI_FLOAT,
-                                                        rnk,
-                                                        tags[rnk]++,
-                                                        MPI_COMM_WORLD,
-                                                        &requests[rnk]);
-
-                                        rnk++;
-                                        if (rnk == mpi_sz) rnk = 1;
+                                if (is_corner(_x, _y, _z)) {
+                                        if (rnk != 0) {
+                                                MPI_Wait(&requests[rnk], MPI_STATUS_IGNORE);
+                                                MPI_Isend(&data_to_send[rnk].data[0],
+                                                                data_to_send[rnk].block_sz * config.nstep,
+                                                                MPI_FLOAT,
+                                                                rnk,
+                                                                rnk,
+                                                                MPI_COMM_WORLD,
+                                                                &requests[rnk]);
+                                        } 
                                 }
                         }
-        } 
 
-        for (int z = 0; z < num_chunks_z; z++)
+                MPI_Waitall(mpi_sz - 1, &requests[1], MPI_STATUSES_IGNORE); 
+        } else {
+               // receive the data 
+               MPI_Recv(&data.data[0], data.block_sz * config.nstep,
+                               MPI_FLOAT, 0, mpi_rank, MPI_COMM_WORLD, 
+                               MPI_STATUS_IGNORE);
+        }
+
+        // convention: x -1, y -1, z -1, x +1, y +1, z +1
+        std::vector<int> neighbours(6, MPI_PROC_NULL);
+        for (int z = 0; z < config.pz; z++) {
+                bool _tmp = false;
+                for (int y = 0; y < config.py; y++) {
+                for (int x = 0; x < config.px; x++) {
+                        if (rank_assgn[x][y][z] != mpi_rank) continue;
+
+                        if (x) neighbours[0] = rank_assgn[x - 1][y][z];
+                        if (y) neighbours[1] = rank_assgn[x][y - 1][z];
+                        if (z) neighbours[2] = rank_assgn[x][y][z - 1];
+                        if (x < config.px - 1) neighbours[3] = rank_assgn[x + 1][y][z];
+                        if (y < config.py - 1) neighbours[4] = rank_assgn[x][y + 1][z];
+                        if (z < config.pz - 1) neighbours[5] = rank_assgn[x][y][z + 1];
+
+                        _tmp = true;
+                        break;
+                }
+                if (_tmp) break;
+                }
+                if (_tmp) break;
+        }
+
+        // halo exchange
+        // first we perform non-blocking sends on the data
+        // xy, yz, zx refers to the planes we are going to send
+        MPI_Datatype halo_xy, halo_yz, halo_zx;
+        MPI_Type_vector(bound[1] * bound[2], config.nstep,
+                        bound[0] * config.nstep, MPI_FLOAT, &halo_yz);
+        MPI_Type_vector(bound[0] * bound[1], config.nstep,
+                        config.nstep, MPI_FLOAT, &halo_xy);
+        MPI_Type_vector(bound[2], config.nstep * bound[0],
+                        bound[1] * bound[0] * config.nstep, MPI_FLOAT, &halo_zx);
+        MPI_Type_commit(&halo_xy);
+        MPI_Type_commit(&halo_yz);
+        MPI_Type_commit(&halo_zx);
+
+        MPI_Request _rst;
+        MPI_Isend(&data(0, 0, 0, 0), 1, halo_yz, neighbours[0],
+                        neighbours[0] + MAGIC, MPI_COMM_WORLD, &_rst); 
+        MPI_Isend(&data(0, 0, 0, 0), 1, halo_zx, neighbours[1],
+                        neighbours[1] + MAGIC, MPI_COMM_WORLD, &_rst);
+        MPI_Isend(&data(0, 0, 0, 0), 1, halo_xy, neighbours[2],
+                        neighbours[2] + MAGIC, MPI_COMM_WORLD, &_rst); 
+
+        MPI_Isend(&data(0, bound[0] - 1, 0, 0), 1, halo_yz, neighbours[3],
+                        neighbours[3] + MAGIC, MPI_COMM_WORLD, &_rst);
+        MPI_Isend(&data(0, 0, bound[1] - 1, 0), 1, halo_zx, neighbours[4],
+                        neighbours[4] + MAGIC, MPI_COMM_WORLD, &_rst);
+        MPI_Isend(&data(0, 0, 0, bound[2] - 1), 1, halo_xy, neighbours[5],
+                        neighbours[5] + MAGIC, MPI_COMM_WORLD, &_rst);
+
+        Halo<float> halo { mpi_rank, bound, config.nstep };
+        halo.recv(neighbours);
+
+        // we perform computations on our local sub-domain while the recv's
+        // proceed asynchronously
+        answer_t<float> ans(config.nstep);
+
+        auto gen_neighs {
+                [](int x, int y, int z) -> auto {
+                        std::vector<std::array<int, 3>> neighs = {
+                                {x - 1, y, z},
+                                {x + 1, y, z},
+                                {x, y - 1, z},
+                                {x, y + 1, z},
+                                {x, y, z - 1},
+                                {x, y, z + 1}};
+                        // do we need move semantics here?
+                        // ig the copy might be elided, idk
+                        return std::move(neighs);
+                }
+        };
+
+
+        for (int x = 1; x < bound[0] - 1; x++) for (int y = 1; y < bound[1] - 1; y++)
+                for (int z = 1; z < bound[2] - 1; z++) for (int t = 0; t < config.nstep; t++) {
+                        float val = data(t, x, y, z);
+                        ans.gmin[t] = std::min(ans.gmin[t], val);
+                        ans.gmax[t] = std::max(ans.gmax[t], val);
+
+                        std::vector<std::array<int, 3>> neighs { gen_neighs(x, y, z) };
+
+                        bool lmin = true, lmax = true;
+                        for (auto &ng: neighs) {
+                                float v = data(t, ng[0], ng[1], ng[2]);
+                                //assert(fabs(v - val) > 0.001);
+                                if (v > val - EPS) lmax = false;
+                                if (v < val + EPS) lmin = false;
+                        }
+
+                        ans.cnt_min[t] += static_cast<int>(lmin);
+                        ans.cnt_max[t] += static_cast<int>(lmax);
+                }
+
+        halo.wait();
+
+        static const Point origin { 0, 0, 0 };
+
+        auto halo_process { 
+                [&bound, &data, &halo, &ans, &gen_neighs, &neighbours]
+                        (int t, int x, int y, int z) -> void {
+                        float val = data(t, x, y, z);
+                        ans.gmin[t] = std::min(ans.gmin[t], val);
+                        ans.gmax[t] = std::max(ans.gmax[t], val);
+
+                        std::vector<std::array<int, 3>> neighs { gen_neighs(x, y, z) };
+
+                        for (int i = 0; i < 6; i++) {
+                                if (neighbours[i] == MPI_PROC_NULL) {
+                                        if (i == 0 && x == 0) return;
+                                        if (i == 1 && y == 0) return;
+                                        if (i == 2 && z == 0) return;
+                                        if (i == 3 && x == bound[0] - 1) return;
+                                        if (i == 4 && y == bound[1] - 1) return;
+                                        if (i == 5 && z == bound[2] - 1) return;
+                                }
+                        }
+
+                        bool lmin = true, lmax = true;
+                        for (auto &ng: neighs) {
+                                float v;
+                                Point p_ng { ng[0], ng[1], ng[2] };
+
+                                if (p_ng < bound && p_ng >= origin) 
+                                        v = data(t, ng[0], ng[1], ng[2]);
+                                else
+                                        v = halo(t, ng[0], ng[1], ng[2]);
+
+                                if (v > val - EPS) lmax = false;
+                                if (v < val + EPS) lmin = false;
+                        }
+                        
+                        ans.cnt_min[t] += static_cast<int>(lmin);
+                        ans.cnt_max[t] += static_cast<int>(lmax);
+                }
+        };
+
+        // x = 0, x = bound[0] - 1
+        for (int y = 0; y < bound[1]; y++) for (int z = 0; z < bound[2]; z++) 
+                for (int t = 0; t < config.nstep; t++) {
+                        halo_process(t, 0, y, z);
+                        if (bound[0] - 1)
+                                halo_process(t, bound[0] - 1, y, z);
+                }
+
+        // y = 0, y = bound[1] - 1
+        for (int x = 1; x < bound[0] - 1; x++) for (int z = 0; z < bound[2]; z++)
+                for (int t = 0; t < config.nstep; t++) {
+                        halo_process(t, x, 0, z);
+                        if (bound[1] - 1)
+                                halo_process(t, x, bound[1] - 1, z);
+                }
+
+        // z = 0, z = bound[2] - 1
+        for (int x = 1; x < bound[0] - 1; x++) for (int y = 1; y < bound[1] - 1; y++)
+                for (int t = 0; t < config.nstep; t++) {
+                        halo_process(t, x, y, 0);
+                        if (bound[2] - 1)
+                                halo_process(t, x, y, bound[2] - 1);
+                }
+
+        answer_t<float> reduced_ans { config.nstep };
+
+        MPI_Reduce(&ans.cnt_min[0], &reduced_ans.cnt_min[0], config.nstep, MPI_INT,
+                        MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&ans.cnt_max[0], &reduced_ans.cnt_max[0], config.nstep, MPI_INT,
+                        MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&ans.gmin[0], &reduced_ans.gmin[0], config.nstep, MPI_FLOAT,
+                       MPI_MIN, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_FLOAT,
+                        MPI_MAX, 0, MPI_COMM_WORLD);
+
+        // TODO: mpi free?
+        if (mpi_rank == 0) {
+                for (int t = 0; t < config.nstep; t++) 
+                        printf("(%d, %d) ", reduced_ans.cnt_min[t], reduced_ans.cnt_max[t]);
+                puts("");
+                
+                for (int t = 0; t < config.nstep; t++)
+                        printf("(%f, %f) ", reduced_ans.gmin[t], reduced_ans.gmax[t]);
+                puts("");
+        }
+
+        MPI_Finalize();
+
+        return 0;
+}
+
 
 
