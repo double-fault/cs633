@@ -99,14 +99,14 @@ public:
         // Note: the operator is (x, y, z) unlike your usual array subscripting [z][y][x]
         __attribute__((always_inline)) T& operator() (int t, int x, int y, int z) {
                 passert(x < bound[0] && y < bound[1] && z < bound[2]);
-                return data[z * bound[0] * bound[1] * steps
-                        + y * bound[0] * steps + x * steps + t];
+                return data[t * bound[0] * bound[1] * bound[2] +
+                        x * bound[1] * bound[2] + y * bound[2] + z];
         }
 
         __attribute__((always_inline)) T operator() (int t, int x, int y, int z) const {
                 passert(x < bound[0] && y < bound[1] && z < bound[2]);
-                return data[z * bound[0] * bound[1] * steps
-                        + y * bound[0] * steps + x * steps + t];
+                return data[t * bound[0] * bound[1] * bound[2] +
+                        x * bound[1] * bound[2] + y * bound[2] + z];
         }
 };
 

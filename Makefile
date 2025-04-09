@@ -2,7 +2,7 @@
 TARGET_EXEC := mpi_decomp
 
 BUILD_DIR := ./build
-SRC_DIRS := ./src
+SRC_DIRS := ./v2
 
 CC := mpicc
 CXX := mpicxx
