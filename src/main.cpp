@@ -11,6 +11,8 @@ int main(int argc, char **argv) {
         MPI_Init(&argc, &argv);
         MPI_Errhandler_set(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
 
+        double start_time = MPI_Wtime(); 
+
         int mpi_rank, mpi_sz;
         MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &mpi_sz);
@@ -81,7 +83,10 @@ int main(int argc, char **argv) {
 
                                 int rnk = rank_assgn[x / bound[0]][y / bound[1]][z / bound[2]];
                                 for (int t = 0; t < config.nstep; t++) {
-                                        float val; fscanf(fptr, "%f", &val);
+                                        float val; [[maybe_unused]] int _tmp; 
+                                        _tmp = fscanf(fptr, "%f", &val);
+                                        passert(_tmp == 1);
+
                                         if (rnk)
                                                 data_to_send[rnk](t, _x, _y, _z) = val;
                                         else
@@ -133,37 +138,10 @@ int main(int argc, char **argv) {
                 if (_tmp) break;
         }
 
-        // halo exchange
-        // first we perform non-blocking sends on the data
-        // xy, yz, zx refers to the planes we are going to send
-        MPI_Datatype halo_xy, halo_yz, halo_zx;
-        MPI_Type_vector(bound[1] * bound[2], config.nstep,
-                        bound[0] * config.nstep, MPI_FLOAT, &halo_yz);
-        MPI_Type_vector(bound[0] * bound[1], config.nstep,
-                        config.nstep, MPI_FLOAT, &halo_xy);
-        MPI_Type_vector(bound[2], config.nstep * bound[0],
-                        bound[1] * bound[0] * config.nstep, MPI_FLOAT, &halo_zx);
-        MPI_Type_commit(&halo_xy);
-        MPI_Type_commit(&halo_yz);
-        MPI_Type_commit(&halo_zx);
+        double read_time = MPI_Wtime();
 
-        MPI_Request _rst;
-        MPI_Isend(&data(0, 0, 0, 0), 1, halo_yz, neighbours[0],
-                        neighbours[0] + MAGIC, MPI_COMM_WORLD, &_rst); 
-        MPI_Isend(&data(0, 0, 0, 0), 1, halo_zx, neighbours[1],
-                        neighbours[1] + MAGIC, MPI_COMM_WORLD, &_rst);
-        MPI_Isend(&data(0, 0, 0, 0), 1, halo_xy, neighbours[2],
-                        neighbours[2] + MAGIC, MPI_COMM_WORLD, &_rst); 
-
-        MPI_Isend(&data(0, bound[0] - 1, 0, 0), 1, halo_yz, neighbours[3],
-                        neighbours[3] + MAGIC, MPI_COMM_WORLD, &_rst);
-        MPI_Isend(&data(0, 0, bound[1] - 1, 0), 1, halo_zx, neighbours[4],
-                        neighbours[4] + MAGIC, MPI_COMM_WORLD, &_rst);
-        MPI_Isend(&data(0, 0, 0, bound[2] - 1), 1, halo_xy, neighbours[5],
-                        neighbours[5] + MAGIC, MPI_COMM_WORLD, &_rst);
-
-        Halo<float> halo { mpi_rank, bound, config.nstep };
-        halo.recv(neighbours);
+        Halo<float> halo { data, neighbours, mpi_rank, bound, config.nstep };
+        halo.recv();
 
         // we perform computations on our local sub-domain while the recv's
         // proceed asynchronously
@@ -180,7 +158,11 @@ int main(int argc, char **argv) {
                                 {x, y, z + 1}};
                         // do we need move semantics here?
                         // ig the copy might be elided, idk
-                        return std::move(neighs);
+                        // update: yup, we don't need move semantics
+                        // according to the compiler warning it indeed stops
+                        // copy elision
+                        //return std::move(neighs);
+                        return neighs;
                 }
         };
 
@@ -272,6 +254,12 @@ int main(int argc, char **argv) {
                                 halo_process(t, x, y, bound[2] - 1);
                 }
 
+        double out_time = MPI_Wtime();
+
+        ans.times[0] = read_time - start_time;
+        ans.times[1] = out_time - read_time;
+        ans.times[2] = out_time - start_time;
+
         answer_t<float> reduced_ans { config.nstep };
 
         MPI_Reduce(&ans.cnt_min[0], &reduced_ans.cnt_min[0], config.nstep, MPI_INT,
@@ -282,6 +270,10 @@ int main(int argc, char **argv) {
                        MPI_MIN, 0, MPI_COMM_WORLD);
         MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_FLOAT,
                         MPI_MAX, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&ans.times, &reduced_ans.times, 3, MPI_DOUBLE,
+                        MPI_MAX, 0, MPI_COMM_WORLD);
+
+        halo.free();
 
         // TODO: mpi free?
         if (mpi_rank == 0) {
@@ -292,6 +284,9 @@ int main(int argc, char **argv) {
                 for (int t = 0; t < config.nstep; t++)
                         printf("(%f, %f) ", reduced_ans.gmin[t], reduced_ans.gmax[t]);
                 puts("");
+
+                printf("%lf %lf %lf\n", reduced_ans.times[0], reduced_ans.times[1],
+                                reduced_ans.times[2]);
         }
 
         MPI_Finalize();
