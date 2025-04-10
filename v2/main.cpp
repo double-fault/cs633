@@ -7,15 +7,12 @@
 
 #include "defs.h"
 
+answer_t<double> perform(config_t config);
+
 int main(int argc, char **argv) {
         MPI_Init(&argc, &argv);
         MPI_Errhandler_set(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
 
-        double start_time = MPI_Wtime(); 
-
-        int mpi_rank, mpi_sz;
-        MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-        MPI_Comm_size(MPI_COMM_WORLD, &mpi_sz);
 
         config_t config { }; 
         if (argc != 10) {
@@ -33,16 +30,79 @@ int main(int argc, char **argv) {
         config.nstep = atoi(argv[8]);
         config.output_file = argv[9];
 
+        answer_t<double> ans { config.nstep };
+
+        int mpi_rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+
+        // Break down the volume along the z direction into "chunks"
+        // to ensure that no chunk has a size greater than MAX_DATA_SZ.
+        // Allows for limiting ram consumption.
+        std::vector<int> chunks_z;
+        config.chunk_cnt = 0;
+        config.chunk_idx = 0;
+        while (config.nz > 0) {
+                int cz = std::min(config.nz, 
+                                MAX_CHUNK_SZ / (config.nx * config.ny * VALUE_SZ * config.nstep)); 
+
+                config.nz -= cz;
+                chunks_z.push_back(cz);
+                config.chunk_cnt++;
+        }
+
+        int csz = chunks_z.size();
+        if (csz > 1) {
+               // we need to make the chunk's xy surfaces overlap 
+               for (int i = 1; i < csz - 1; i++) chunks_z[i] += 2;
+               chunks_z[0]++;
+               chunks_z[csz - 1]++;
+        }
+
+        config.offset = 0;
+        for (auto &cz: chunks_z) {
+                assert(cz > 2);
+
+                config.nz = cz;
+                ans += perform(config);
+
+                config.offset += (config.nx * config.ny * (config.nz - 2) * VALUE_SZ * config.nstep);
+                config.chunk_idx++;
+        }
+        
+
+        if (mpi_rank == 0) {
+                for (int t = 0; t < config.nstep; t++) 
+                        printf("(%d, %d) ", ans.cnt_min[t], ans.cnt_max[t]);
+                puts("");
+                
+                for (int t = 0; t < config.nstep; t++)
+                        printf("(%f, %f) ", ans.gmin[t], ans.gmax[t]);
+                puts("");
+
+                printf("%lf %lf %lf\n", ans.times[0], ans.times[1],
+                                ans.times[2]);
+        }
+
+        MPI_Finalize();
+}
+
+answer_t<double> perform(config_t config) {
+        double start_time = MPI_Wtime(); 
+
+        int mpi_rank, mpi_sz;
+        MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+        printf("MPI_RANK %d\n", mpi_rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &mpi_sz);
+
+
         assert(mpi_sz == config.px * config.py * config.pz);
-        assert(config.nx % config.px == 0);
-        assert(config.ny % config.py == 0);
-        assert(config.nz % config.pz == 0);
+        //assert(config.nx % config.px == 0);
+        //assert(config.ny % config.py == 0);
+        //assert(config.nz % config.pz == 0);
 
         // all sub-domains have equal sizes. bound stores the size
         Point bound { config.nx / config.px, config.ny / config.py,
                config.nz / config.pz }; 
-
-        Block<float> data(bound, config.nstep); // this rank's sub-domain
 
         std::vector rank_assgn(config.px, std::vector(config.py, std::vector<int>(config.pz)));
         {
@@ -56,11 +116,21 @@ int main(int argc, char **argv) {
 
         // convention: x -1, y -1, z -1, x +1, y +1, z +1
         std::vector<int> neighbours(6, MPI_PROC_NULL);
+
+        int start_coords[4]; start_coords[3] = 0;
         for (int z = 0; z < config.pz; z++) {
                 bool _tmp = false;
                 for (int y = 0; y < config.py; y++) {
                 for (int x = 0; x < config.px; x++) {
                         if (rank_assgn[x][y][z] != mpi_rank) continue;
+
+                        start_coords[0] = z * bound[2];
+                        start_coords[1] = y * bound[1];
+                        start_coords[2] = x * bound[0];
+
+                        if (x == config.px - 1 && config.nx % config.px) bound[0] += config.nx % config.px;
+                        if (y == config.py - 1 && config.ny % config.py) bound[1] += config.ny % config.py;
+                        if (z == config.pz - 1 && config.nz % config.pz) bound[2] += config.nz % config.pz;
 
                         if (x) neighbours[0] = rank_assgn[x - 1][y][z];
                         if (y) neighbours[1] = rank_assgn[x][y - 1][z];
@@ -77,14 +147,31 @@ int main(int argc, char **argv) {
                 if (_tmp) break;
         }
 
+        MPI_Datatype filetype;
+        {
+                int sizes[4] = {config.nz, config.ny, config.nx, config.nstep};
+                int subsizes[4] = {bound[2], bound[1], bound[0], config.nstep};
+                MPI_Type_create_subarray(4, sizes, subsizes, start_coords, 
+                               MPI_ORDER_C, MPI_DOUBLE, &filetype); 
+        }
+        MPI_Type_commit(&filetype);
+
+        MPI_File fh; 
+        MPI_File_open(MPI_COMM_WORLD, config.input_file, MPI_MODE_RDONLY, MPI_INFO_NULL, &fh);
+        MPI_File_set_view(fh, config.offset, MPI_DOUBLE, filetype, "native", MPI_INFO_NULL);
+
+        Block<double> data(bound, config.nstep); // this rank's sub-domain
+        MPI_File_read_all(fh, &data.data[0], data.block_sz * config.nstep,
+                        MPI_DOUBLE, MPI_STATUS_IGNORE);
+
         double read_time = MPI_Wtime();
 
-        Halo<float> halo { data, neighbours, mpi_rank, bound, config.nstep };
+        Halo<double> halo { data, neighbours, mpi_rank, bound, config.nstep };
         halo.recv();
 
         // we perform computations on our local sub-domain while the recv's
         // proceed asynchronously
-        answer_t<float> ans(config.nstep);
+        answer_t<double> ans(config.nstep);
 
         auto gen_neighs {
                 [](int x, int y, int z) -> auto {
@@ -108,7 +195,7 @@ int main(int argc, char **argv) {
 
         for (int x = 1; x < bound[0] - 1; x++) for (int y = 1; y < bound[1] - 1; y++)
                 for (int z = 1; z < bound[2] - 1; z++) for (int t = 0; t < config.nstep; t++) {
-                        float val = data(t, x, y, z);
+                        double val = data(t, x, y, z);
                         ans.gmin[t] = std::min(ans.gmin[t], val);
                         ans.gmax[t] = std::max(ans.gmax[t], val);
 
@@ -116,7 +203,7 @@ int main(int argc, char **argv) {
 
                         bool lmin = true, lmax = true;
                         for (auto &ng: neighs) {
-                                float v = data(t, ng[0], ng[1], ng[2]);
+                                double v = data(t, ng[0], ng[1], ng[2]);
                                 //assert(fabs(v - val) > 0.001);
                                 if (v > val - EPS) lmax = false;
                                 if (v < val + EPS) lmin = false;
@@ -130,29 +217,47 @@ int main(int argc, char **argv) {
 
         static const Point origin { 0, 0, 0 };
 
+        const bool first_chunk = config.chunk_idx == 0;
+        const bool last_chunk = config.chunk_idx == (config.chunk_cnt - 1);
+
         auto halo_process { 
-                [&bound, &data, &halo, &ans, &gen_neighs, &neighbours]
+                [&bound, &data, &halo, &ans, &gen_neighs, &neighbours, 
+                        &first_chunk, &last_chunk]
                         (int t, int x, int y, int z) -> void {
-                        float val = data(t, x, y, z);
+                        double val = data(t, x, y, z);
                         ans.gmin[t] = std::min(ans.gmin[t], val);
                         ans.gmax[t] = std::max(ans.gmax[t], val);
 
                         std::vector<std::array<int, 3>> neighs { gen_neighs(x, y, z) };
 
+                        std::vector<std::array<int, 3>> to_erase;
                         for (int i = 0; i < 6; i++) {
                                 if (neighbours[i] == MPI_PROC_NULL) {
-                                        if (i == 0 && x == 0) return;
-                                        if (i == 1 && y == 0) return;
-                                        if (i == 2 && z == 0) return;
-                                        if (i == 3 && x == bound[0] - 1) return;
-                                        if (i == 4 && y == bound[1] - 1) return;
-                                        if (i == 5 && z == bound[2] - 1) return;
+                                        if (i == 0 && x == 0) to_erase.push_back({x - 1, y, z});
+                                        if (i == 1 && y == 0) to_erase.push_back({x, y - 1, z});
+                                        if (i == 2 && z == 0) {
+                                                if (first_chunk) 
+                                                        to_erase.push_back({x, y, z - 1});
+                                                else
+                                                        return;
+                                        }
+                                        if (i == 3 && x == bound[0] - 1) to_erase.push_back({x + 1, y, z});
+                                        if (i == 4 && y == bound[1] - 1) to_erase.push_back({x, y + 1, z});
+                                        if (i == 5 && z == bound[2] - 1) {
+                                                if (last_chunk)
+                                                        to_erase.push_back({x, y, z + 1});
+                                                else
+                                                        return;
+                                        }
                                 }
                         }
 
+                        for (auto &te: to_erase) 
+                               neighs.erase(std::find(neighs.begin(), neighs.end(), te)); 
+
                         bool lmin = true, lmax = true;
                         for (auto &ng: neighs) {
-                                float v;
+                                double v;
                                 Point p_ng { ng[0], ng[1], ng[2] };
 
                                 if (p_ng < bound && p_ng >= origin) 
@@ -199,38 +304,24 @@ int main(int argc, char **argv) {
         ans.times[1] = out_time - read_time;
         ans.times[2] = out_time - start_time;
 
-        answer_t<float> reduced_ans { config.nstep };
+        answer_t<double> reduced_ans { config.nstep };
 
         MPI_Reduce(&ans.cnt_min[0], &reduced_ans.cnt_min[0], config.nstep, MPI_INT,
                         MPI_SUM, 0, MPI_COMM_WORLD);
         MPI_Reduce(&ans.cnt_max[0], &reduced_ans.cnt_max[0], config.nstep, MPI_INT,
                         MPI_SUM, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&ans.gmin[0], &reduced_ans.gmin[0], config.nstep, MPI_FLOAT,
+        MPI_Reduce(&ans.gmin[0], &reduced_ans.gmin[0], config.nstep, MPI_DOUBLE,
                        MPI_MIN, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_FLOAT,
+        MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_DOUBLE,
                         MPI_MAX, 0, MPI_COMM_WORLD);
         MPI_Reduce(&ans.times, &reduced_ans.times, 3, MPI_DOUBLE,
                         MPI_MAX, 0, MPI_COMM_WORLD);
 
         halo.free();
 
-        // TODO: mpi free?
-        if (mpi_rank == 0) {
-                for (int t = 0; t < config.nstep; t++) 
-                        printf("(%d, %d) ", reduced_ans.cnt_min[t], reduced_ans.cnt_max[t]);
-                puts("");
-                
-                for (int t = 0; t < config.nstep; t++)
-                        printf("(%f, %f) ", reduced_ans.gmin[t], reduced_ans.gmax[t]);
-                puts("");
+        MPI_Barrier(MPI_COMM_WORLD);
 
-                printf("%lf %lf %lf\n", reduced_ans.times[0], reduced_ans.times[1],
-                                reduced_ans.times[2]);
-        }
-
-        MPI_Finalize();
-
-        return 0;
+        return reduced_ans;
 }
 
 

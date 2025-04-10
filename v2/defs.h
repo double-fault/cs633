@@ -26,7 +26,8 @@
 
 // config parameters
 
-const int MAX_MSG_SIZE = 1024 * 1024 * 4; // 4 MB 
+const int VALUE_SZ = 8; // set 8 for double, 4 for bytes
+const int MAX_CHUNK_SZ = 1024 * 1024; // 50 MB
 
 #define MAGIC 333
 
@@ -99,14 +100,14 @@ public:
         // Note: the operator is (x, y, z) unlike your usual array subscripting [z][y][x]
         __attribute__((always_inline)) T& operator() (int t, int x, int y, int z) {
                 passert(x < bound[0] && y < bound[1] && z < bound[2]);
-                return data[t * bound[0] * bound[1] * bound[2] +
-                        x * bound[1] * bound[2] + y * bound[2] + z];
+                return data[z * bound[0] * bound[1] * steps
+                        + y * bound[0] * steps + x * steps + t];
         }
 
         __attribute__((always_inline)) T operator() (int t, int x, int y, int z) const {
                 passert(x < bound[0] && y < bound[1] && z < bound[2]);
-                return data[t * bound[0] * bound[1] * bound[2] +
-                        x * bound[1] * bound[2] + y * bound[2] + z];
+                return data[z * bound[0] * bound[1] * steps
+                        + y * bound[0] * steps + x * steps + t];
         }
 };
 
@@ -138,7 +139,7 @@ public:
 template<typename T>
 class Halo final {
 private:
-        Block<float> &data;
+        Block<T> &data;
         
         MPI_Datatype halo_xy, halo_yz, halo_zx;
 
@@ -182,6 +183,9 @@ public:
 };
 
 typedef struct _config_t {
+        int offset;
+        int chunk_idx, chunk_cnt;
+
         int px, py, pz;
         int nx, ny, nz;
         int nstep; // no. of time steps
@@ -195,14 +199,33 @@ struct answer_t {
         std::vector<int> cnt_min, cnt_max;
         std::vector<T> gmin, gmax;
 
-        std::array<double, 3> times;
+        int steps;
+
+        std::array<double, 3> times { 0 };
 
         answer_t(int nsteps) :
                 cnt_min(nsteps, 0), cnt_max(nsteps, 0),
                 gmin(nsteps, std::numeric_limits<T>::max()), 
-                gmax(nsteps, std::numeric_limits<T>::min())
+                gmax(nsteps, std::numeric_limits<T>::min()),
+                steps { nsteps }
         {
         }
+
+        answer_t& operator+=(answer_t const& other) {
+                for (int i = 0; i < steps; i++) {
+                        cnt_min[i] += other.cnt_min[i];
+                        cnt_max[i] += other.cnt_max[i];
+
+                        gmin[i] = std::min(gmin[i], other.gmin[i]);
+                        gmax[i] = std::max(gmax[i], other.gmax[i]);
+                }
+
+                for (int i = 0; i < 3; i++) {
+                        times[i] += other.times[i];
+                }
+                return *this;
+        }
+
 };
 
 #endif // _DEFS_H

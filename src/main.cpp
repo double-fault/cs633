@@ -200,16 +200,20 @@ int main(int argc, char **argv) {
 
                         std::vector<std::array<int, 3>> neighs { gen_neighs(x, y, z) };
 
+                        std::vector<std::array<int, 3>> to_erase;
                         for (int i = 0; i < 6; i++) {
                                 if (neighbours[i] == MPI_PROC_NULL) {
-                                        if (i == 0 && x == 0) return;
-                                        if (i == 1 && y == 0) return;
-                                        if (i == 2 && z == 0) return;
-                                        if (i == 3 && x == bound[0] - 1) return;
-                                        if (i == 4 && y == bound[1] - 1) return;
-                                        if (i == 5 && z == bound[2] - 1) return;
+                                        if (i == 0 && x == 0) to_erase.push_back({x - 1, y, z});
+                                        if (i == 1 && y == 0) to_erase.push_back({x, y - 1, z});
+                                        if (i == 2 && z == 0) to_erase.push_back({x, y, z - 1});
+                                        if (i == 3 && x == bound[0] - 1) to_erase.push_back({x + 1, y, z});
+                                        if (i == 4 && y == bound[1] - 1) to_erase.push_back({x, y + 1, z});
+                                        if (i == 5 && z == bound[2] - 1) to_erase.push_back({x, y, z + 1});
                                 }
                         }
+
+                        for (auto &te: to_erase) 
+                               neighs.erase(std::find(neighs.begin(), neighs.end(), te)); 
 
                         bool lmin = true, lmax = true;
                         for (auto &ng: neighs) {

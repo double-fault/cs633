@@ -1,8 +1,8 @@
 # Thanks to Job Vranish (https://spin.atomicobject.com/2016/08/26/makefile-c-projects/)
-TARGET_EXEC := mpi_decomp
-
 BUILD_DIR := ./build
-SRC_DIRS := ./v2
+SRC_DIRS := v2
+
+TARGET_EXEC := exec_$(SRC_DIRS)
 
 CC := mpicc
 CXX := mpicxx

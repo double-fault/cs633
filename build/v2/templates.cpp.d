@@ -1,4 +1,4 @@
-build/./v2/templates.cpp.o: v2/templates.cpp v2/defs.h \
+build/v2/templates.cpp.o: v2/templates.cpp v2/defs.h \
  /home/ashish/intel/oneapi/mpi/2021.14/include/mpi.h \
  /home/ashish/intel/oneapi/mpi/2021.14/include/mpio.h \
  /home/ashish/intel/oneapi/mpi/2021.14/include/mpi.h \
