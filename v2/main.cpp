@@ -7,7 +7,7 @@
 
 #include "defs.h"
 
-answer_t<double> perform(config_t config);
+answer_t<float> perform(config_t config);
 
 int main(int argc, char **argv) {
         MPI_Init(&argc, &argv);
@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
         config.nstep = atoi(argv[8]);
         config.output_file = argv[9];
 
-        answer_t<double> ans { config.nstep };
+        answer_t<float> ans { config.nstep };
 
         int mpi_rank;
         MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
@@ -71,27 +71,30 @@ int main(int argc, char **argv) {
         
 
         if (mpi_rank == 0) {
-                for (int t = 0; t < config.nstep; t++) 
-                        printf("(%d, %d) ", ans.cnt_min[t], ans.cnt_max[t]);
-                puts("");
-                
-                for (int t = 0; t < config.nstep; t++)
-                        printf("(%f, %f) ", ans.gmin[t], ans.gmax[t]);
-                puts("");
+                FILE *fptr = fopen(config.output_file, "w");
 
-                printf("%lf %lf %lf\n", ans.times[0], ans.times[1],
+                for (int t = 0; t < config.nstep; t++) 
+                        fprintf(fptr, "(%d, %d) ", ans.cnt_min[t], ans.cnt_max[t]);
+                fprintf(fptr, "\n");
+
+                for (int t = 0; t < config.nstep; t++)
+                        fprintf(fptr, "(%f, %f) ", ans.gmin[t], ans.gmax[t]);
+                fprintf(fptr, "\n");
+
+                fprintf(fptr, "%lf %lf %lf\n", ans.times[0], ans.times[1],
                                 ans.times[2]);
+
+                fclose(fptr);
         }
 
         MPI_Finalize();
 }
 
-answer_t<double> perform(config_t config) {
+answer_t<float> perform(config_t config) {
         double start_time = MPI_Wtime(); 
 
         int mpi_rank, mpi_sz;
         MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-        printf("MPI_RANK %d\n", mpi_rank);
         MPI_Comm_size(MPI_COMM_WORLD, &mpi_sz);
 
 
@@ -152,26 +155,36 @@ answer_t<double> perform(config_t config) {
                 int sizes[4] = {config.nz, config.ny, config.nx, config.nstep};
                 int subsizes[4] = {bound[2], bound[1], bound[0], config.nstep};
                 MPI_Type_create_subarray(4, sizes, subsizes, start_coords, 
-                               MPI_ORDER_C, MPI_DOUBLE, &filetype); 
+                               MPI_ORDER_C, MPI_FLOAT, &filetype); 
         }
         MPI_Type_commit(&filetype);
 
         MPI_File fh; 
-        MPI_File_open(MPI_COMM_WORLD, config.input_file, MPI_MODE_RDONLY, MPI_INFO_NULL, &fh);
-        MPI_File_set_view(fh, config.offset, MPI_DOUBLE, filetype, "native", MPI_INFO_NULL);
 
-        Block<double> data(bound, config.nstep); // this rank's sub-domain
+        MPI_Info info;
+        MPI_Info_create(&info);
+        MPI_Info_set(info, "romio_cb_read", "enable");
+        MPI_Info_set(info, "romio_cb_write", "enable");
+        MPI_Info_set(info, "cb_buffer_size", "16777216");
+        MPI_Info_set(info, "cb_nodes", "4");
+        MPI_Info_set(info, "romio_ds_read", "enable");
+        MPI_Info_set(info, "romio_no_indep_rw", "true");
+
+        MPI_File_open(MPI_COMM_WORLD, config.input_file, MPI_MODE_RDONLY, info, &fh);
+        MPI_File_set_view(fh, config.offset, MPI_FLOAT, filetype, "native", info);
+
+        Block<float> data(bound, config.nstep); // this rank's sub-domain
         MPI_File_read_all(fh, &data.data[0], data.block_sz * config.nstep,
-                        MPI_DOUBLE, MPI_STATUS_IGNORE);
+                        MPI_FLOAT, MPI_STATUS_IGNORE);
 
         double read_time = MPI_Wtime();
 
-        Halo<double> halo { data, neighbours, mpi_rank, bound, config.nstep };
+        Halo<float> halo { data, neighbours, mpi_rank, bound, config.nstep };
         halo.recv();
 
         // we perform computations on our local sub-domain while the recv's
         // proceed asynchronously
-        answer_t<double> ans(config.nstep);
+        answer_t<float> ans(config.nstep);
 
         auto gen_neighs {
                 [](int x, int y, int z) -> auto {
@@ -195,7 +208,7 @@ answer_t<double> perform(config_t config) {
 
         for (int x = 1; x < bound[0] - 1; x++) for (int y = 1; y < bound[1] - 1; y++)
                 for (int z = 1; z < bound[2] - 1; z++) for (int t = 0; t < config.nstep; t++) {
-                        double val = data(t, x, y, z);
+                        float val = data(t, x, y, z);
                         ans.gmin[t] = std::min(ans.gmin[t], val);
                         ans.gmax[t] = std::max(ans.gmax[t], val);
 
@@ -203,7 +216,7 @@ answer_t<double> perform(config_t config) {
 
                         bool lmin = true, lmax = true;
                         for (auto &ng: neighs) {
-                                double v = data(t, ng[0], ng[1], ng[2]);
+                                float v = data(t, ng[0], ng[1], ng[2]);
                                 //assert(fabs(v - val) > 0.001);
                                 if (v > val - EPS) lmax = false;
                                 if (v < val + EPS) lmin = false;
@@ -224,7 +237,7 @@ answer_t<double> perform(config_t config) {
                 [&bound, &data, &halo, &ans, &gen_neighs, &neighbours, 
                         &first_chunk, &last_chunk]
                         (int t, int x, int y, int z) -> void {
-                        double val = data(t, x, y, z);
+                        float val = data(t, x, y, z);
                         ans.gmin[t] = std::min(ans.gmin[t], val);
                         ans.gmax[t] = std::max(ans.gmax[t], val);
 
@@ -257,7 +270,7 @@ answer_t<double> perform(config_t config) {
 
                         bool lmin = true, lmax = true;
                         for (auto &ng: neighs) {
-                                double v;
+                                float v;
                                 Point p_ng { ng[0], ng[1], ng[2] };
 
                                 if (p_ng < bound && p_ng >= origin) 
@@ -304,17 +317,17 @@ answer_t<double> perform(config_t config) {
         ans.times[1] = out_time - read_time;
         ans.times[2] = out_time - start_time;
 
-        answer_t<double> reduced_ans { config.nstep };
+        answer_t<float> reduced_ans { config.nstep };
 
         MPI_Reduce(&ans.cnt_min[0], &reduced_ans.cnt_min[0], config.nstep, MPI_INT,
                         MPI_SUM, 0, MPI_COMM_WORLD);
         MPI_Reduce(&ans.cnt_max[0], &reduced_ans.cnt_max[0], config.nstep, MPI_INT,
                         MPI_SUM, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&ans.gmin[0], &reduced_ans.gmin[0], config.nstep, MPI_DOUBLE,
+        MPI_Reduce(&ans.gmin[0], &reduced_ans.gmin[0], config.nstep, MPI_FLOAT,
                        MPI_MIN, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_DOUBLE,
+        MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_FLOAT,
                         MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&ans.times, &reduced_ans.times, 3, MPI_DOUBLE,
+        MPI_Reduce(&ans.times[0], &reduced_ans.times[0], 3, MPI_DOUBLE,
                         MPI_MAX, 0, MPI_COMM_WORLD);
 
         halo.free();

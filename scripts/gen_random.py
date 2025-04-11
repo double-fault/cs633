@@ -11,7 +11,7 @@ def main():
     n = x * y * z
     base_filename = f"data_{x}_{y}_{z}_{m}"
     txt_filename = base_filename + ".txt"
-    bin_filename = base_filename + "_bin.txt"
+    bin_filename = base_filename + ".bin.txt"
 
     with open(txt_filename, 'w') as txt_file, open(bin_filename, 'wb') as bin_file:
         for _ in range(n):
@@ -20,7 +20,7 @@ def main():
             txt_file.write(' '.join(f"{val:.2f}" for val in row) + '\n')
             # Write to binary file (64-bit doubles)
             for val in row:
-                bin_file.write(struct.pack('d', val))
+                bin_file.write(struct.pack('f', val))
 
 if __name__ == "__main__":
     main()

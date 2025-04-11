@@ -8,9 +8,11 @@
 #include "defs.h"
 #include "halo.cpp"
 
-//template class Halo<float>;
-template class Halo<double>;
+template class Halo<float>;
+//template class Halo<double>;
 
+// smh its back to floats again...
+//
 // nvm, binary file is packed with doubles.. saved
 //
 // old comment:

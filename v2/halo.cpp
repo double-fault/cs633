@@ -20,11 +20,11 @@ Halo<T>::Halo(Block<T> _data, std::vector<int> _neighbours,
         // first we perform non-blocking sends on the data
         // xy, yz, zx refers to the planes we are going to send
         MPI_Type_vector(bound[1] * bound[2], steps,
-                        bound[0] * steps, MPI_DOUBLE, &halo_yz);
+                        bound[0] * steps, MPI_FLOAT, &halo_yz);
         MPI_Type_vector(bound[0] * bound[1], steps,
-                        steps, MPI_DOUBLE, &halo_xy);
+                        steps, MPI_FLOAT, &halo_xy);
         MPI_Type_vector(bound[2], steps * bound[0],
-                        bound[1] * bound[0] * steps, MPI_DOUBLE, &halo_zx);
+                        bound[1] * bound[0] * steps, MPI_FLOAT, &halo_zx);
         MPI_Type_commit(&halo_xy);
         MPI_Type_commit(&halo_yz);
         MPI_Type_commit(&halo_zx);
@@ -60,7 +60,7 @@ void Halo<T>::recv() {
         for (int i = 0; i < 6; i++) {
                 if (neighbours[i] != MPI_PROC_NULL) {
                         MPI_Irecv(&halo_recv[i].block.data[0], halo_recv[i].block_sz * steps, 
-                                         MPI_DOUBLE,
+                                         MPI_FLOAT,
                                        neighbours[i], my_rank + MAGIC,
                                       MPI_COMM_WORLD, &requests[i]);
                 }

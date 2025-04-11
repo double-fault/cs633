@@ -8,6 +8,8 @@
 #ifndef _DEFS_H
 #define _DEFS_H
 
+#include <algorithm>
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <vector>
@@ -26,8 +28,8 @@
 
 // config parameters
 
-const int VALUE_SZ = 8; // set 8 for double, 4 for bytes
-const int MAX_CHUNK_SZ = 1024 * 1024; // 50 MB
+const int VALUE_SZ = 4; // set 8 for float, 4 for bytes
+const int MAX_CHUNK_SZ = 10 * 1024 * 1024; // 10 MB
 
 #define MAGIC 333
 
@@ -201,7 +203,7 @@ struct answer_t {
 
         int steps;
 
-        std::array<double, 3> times { 0 };
+        std::array<double, 3> times { 0 , 0, 0 };
 
         answer_t(int nsteps) :
                 cnt_min(nsteps, 0), cnt_max(nsteps, 0),
