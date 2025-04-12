@@ -276,7 +276,7 @@ int main(int argc, char **argv) {
                        MPI_MIN, 0, MPI_COMM_WORLD);
         MPI_Reduce(&ans.gmax[0], &reduced_ans.gmax[0], config.nstep, MPI_FLOAT,
                         MPI_MAX, 0, MPI_COMM_WORLD);
-        MPI_Reduce(&ans.times, &reduced_ans.times[0], 3, MPI_DOUBLE,
+        MPI_Reduce(&ans.times[0], &reduced_ans.times[0], 3, MPI_DOUBLE,
                         MPI_MAX, 0, MPI_COMM_WORLD);
 
         halo.free();

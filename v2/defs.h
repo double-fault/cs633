@@ -24,7 +24,7 @@
 
 // comment this for timing runs
 // will disable passert calls
-#define DEBUG
+//#define DEBUG
 
 // config parameters
 
