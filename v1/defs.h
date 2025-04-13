@@ -95,7 +95,6 @@ public:
                 block_sz { !_bound },
                 data ( (!_bound) * _steps , 0)
         {
-                // TODO: add a passert if !p * _steps is overflowing an int
         }
 
         // Note: the operator is (x, y, z) unlike your usual array subscripting [z][y][x]

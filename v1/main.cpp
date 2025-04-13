@@ -76,7 +76,6 @@ int main(int argc, char **argv) {
                 MPI_Request requests[mpi_sz];
                 for (int i = 0; i < mpi_sz; i++) requests[i] = MPI_REQUEST_NULL;
                 
-                // TODO: can probably be optimized a lot
                 for (int z = 0; z < config.nz; z++) for (int y = 0; y < config.ny; y++)
                         for (int x = 0; x < config.nx; x++) {
                                 int _x = x % bound[0];
@@ -142,6 +141,7 @@ int main(int argc, char **argv) {
 
         double read_time = MPI_Wtime();
 
+        // Halo exchange
         Halo<float> halo { data, neighbours, mpi_rank, bound, config.nstep };
         halo.recv();
 
@@ -181,6 +181,7 @@ int main(int argc, char **argv) {
                         for (auto &ng: neighs) {
                                 float v = data(t, ng[0], ng[1], ng[2]);
                                 //assert(fabs(v - val) > 0.001);
+                                // This EPS stuff is to deal with floating point error
                                 if (v > val - EPS) lmax = false;
                                 if (v < val + EPS) lmin = false;
                         }
@@ -281,7 +282,6 @@ int main(int argc, char **argv) {
 
         halo.free();
 
-        // TODO: mpi free?
         if (mpi_rank == 0) {
                 FILE *fptr = fopen(config.output_file, "w");
 

@@ -58,6 +58,8 @@ int main(int argc, char **argv) {
                chunks_z[csz - 1]++;
         }
 
+        printf("CSZ %d\n", csz);
+
         config.offset = 0;
         for (auto &cz: chunks_z) {
                 assert(cz > 2);
@@ -218,6 +220,7 @@ answer_t<float> perform(config_t config) {
                         for (auto &ng: neighs) {
                                 float v = data(t, ng[0], ng[1], ng[2]);
                                 //assert(fabs(v - val) > 0.001);
+                                //EPS stuff to deal with floating point error
                                 if (v > val - EPS) lmax = false;
                                 if (v < val + EPS) lmin = false;
                         }

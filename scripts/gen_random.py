@@ -16,9 +16,7 @@ def main():
     with open(txt_filename, 'w') as txt_file, open(bin_filename, 'wb') as bin_file:
         for _ in range(n):
             row = [round(random.uniform(-50, 50), 2) for _ in range(m)]
-            # Write to text file
             txt_file.write(' '.join(f"{val:.2f}" for val in row) + '\n')
-            # Write to binary file (64-bit doubles)
             for val in row:
                 bin_file.write(struct.pack('f', val))
 

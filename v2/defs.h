@@ -29,7 +29,7 @@
 // config parameters
 
 const int VALUE_SZ = 4; // set 8 for float, 4 for bytes
-const int MAX_CHUNK_SZ = 10 * 1024 * 1024; // 10 MB
+const int MAX_CHUNK_SZ = 20 * 1024 * 1024; // 20 MB
 
 #define MAGIC 333
 
@@ -96,7 +96,6 @@ public:
                 block_sz { !_bound },
                 data ( (!_bound) * _steps , 0)
         {
-                // TODO: add a passert if !p * _steps is overflowing an int
         }
 
         // Note: the operator is (x, y, z) unlike your usual array subscripting [z][y][x]
